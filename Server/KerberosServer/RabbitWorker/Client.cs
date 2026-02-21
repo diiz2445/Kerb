@@ -10,8 +10,6 @@ namespace KerberosOverRabbitMq.Client
 {
     class Client
     {
-        
-
         public static async void Run()
         {
             string ExchangeName = "kerberos.exchange";
@@ -63,6 +61,7 @@ namespace KerberosOverRabbitMq.Client
                 var body = ea.Body.ToArray();
                 string msg = Encoding.UTF8.GetString(body);
                 Console.WriteLine($"[Ответ от KDC] {msg}");
+                channel.BasicAckAsync(deliveryTag: ea.DeliveryTag, multiple: false);
             };
 
             channel.BasicConsumeAsync(replyQueue, autoAck: true, consumer);
