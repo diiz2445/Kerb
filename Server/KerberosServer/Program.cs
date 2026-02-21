@@ -1,4 +1,5 @@
 ﻿using System;
+using System.IO;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Configuration;
@@ -13,24 +14,24 @@ namespace KerberosOverRabbitMq.Kdc
     {
         public static async Task Main(string[] args)
         {
-             Run();
-            Client.Client.Run();
-            
-            while (true)
-            {
-            }
+            await RunAsync();
+            Console.WriteLine("Нажмите Enter для завершения...");
+            Console.ReadLine();
         }
-        public static async void Run()
+
+        private static async Task RunAsync()
         {
+            // Путь к файлу .env (можно изменить на нужный)
             string envPath = Path.Combine(Directory.GetCurrentDirectory(), "Rabbit.env");
-            // 1. Загружаем .env + переменные окружения
-            //Env.Load(); // загружает .env из текущей директории
+
+            // Загружаем переменные из .env
             Env.Load(envPath);
+
             var config = new ConfigurationBuilder()
                 .AddEnvironmentVariables()
                 .Build();
 
-            // 2. Читаем все нужные параметры
+            // Читаем настройки
             string hostName = config["RABBITMQ_HOST"] ?? "localhost";
             string portStr = config["RABBITMQ_PORT"] ?? "5672";
             string username = config["RABBITMQ_USERNAME"] ?? "guest";
@@ -59,19 +60,30 @@ namespace KerberosOverRabbitMq.Kdc
                 Port = port,
                 UserName = username,
                 Password = password,
-                VirtualHost = virtualHost,
-
+                VirtualHost = virtualHost
+                
             };
 
-            using var connection = await factory.CreateConnectionAsync();
-            using var channel = await connection.CreateChannelAsync();
+            await using var connection = await factory.CreateConnectionAsync("KDC-Demo");
+            await using var channel = await connection.CreateChannelAsync();
 
-
-            // Очередь для входящих запросов
+            // Объявляем exchange (topic)
             await channel.ExchangeDeclareAsync(
-                            exchange: "topic_logs",
-                            type: ExchangeType.Topic,
-                            durable: true); channel.QueueBindAsync(queueName, exchangeName, topicPattern);
+                exchange: exchangeName,
+                type: ExchangeType.Topic,
+                durable: true,
+                autoDelete: false,
+                arguments: null);
+
+            // Очередь для запросов к KDC
+            await channel.QueueDeclareAsync(
+                queue: queueName,
+                durable: true,
+                exclusive: false,
+                autoDelete: false,
+                arguments: null);
+
+            await channel.QueueBindAsync(queueName, exchangeName, topicPattern);
 
             var consumer = new AsyncEventingBasicConsumer(channel);
             consumer.ReceivedAsync += async (model, ea) =>
@@ -79,37 +91,74 @@ namespace KerberosOverRabbitMq.Kdc
                 try
                 {
                     var body = ea.Body.ToArray();
-                    string routingKey = ea.RoutingKey; // kerberos.client.alice
+                    string routingKey = ea.RoutingKey;
 
-                    if (!routingKey.StartsWith("kerberos.client."))
+                    if (!routingKey.StartsWith("kerberos.client.") || routingKey.Length <= "kerberos.client.".Length)
                     {
-                        channel.BasicAckAsync(ea.DeliveryTag, false);
+                        Console.WriteLine($"Некорректный routing key: {routingKey} → игнорируем");
+                        await channel.BasicAckAsync(ea.DeliveryTag, false);
                         return;
                     }
 
-                    string clientPrincipal = routingKey["kerberos.client.".Length..];
+                    string clientPrincipal = routingKey.Substring("kerberos.client.".Length);
 
                     string message = Encoding.UTF8.GetString(body);
                     Console.WriteLine($"[{routingKey}] ← {message.Trim()}");
 
-                    // Здесь должна быть реальная логика парсинга Kerberos-сообщений
+                    // Парсим JSON и определяем тип запроса
                     string responseType = "ERROR";
                     string responseContent = "Неизвестный запрос";
 
-                    if (message.Contains("AS-REQ"))
+                    try
                     {
-                        responseType = "AS-REP";
-                        responseContent = $"TGT выдан для {clientPrincipal} @ {realm} (демо)";
+                        using var doc = JsonDocument.Parse(message);
+                        var root = doc.RootElement;
+
+                        if (root.TryGetProperty("type", out var typeProp) &&
+                            typeProp.ValueKind == JsonValueKind.String)
+                        {
+                            string reqType = typeProp.GetString()?.Trim().ToUpperInvariant() ?? "";
+
+                            switch (reqType)
+                            {
+                                case "AS-REQ":
+                                case "AS_REQ":
+                                case "ASREQUEST":
+                                    responseType = "AS-REP";
+                                    responseContent = $"TGT выдан для {clientPrincipal} @ {realm} (демо)";
+                                    break;
+
+                                case "TGS-REQ":
+                                case "TGS_REQ":
+                                case "TGSREQUEST":
+                                    responseType = "TGS-REP";
+                                    responseContent = $"Сервисный тикет выдан для {clientPrincipal} (демо)";
+                                    break;
+
+                                case "AP-REQ":
+                                case "AP_REQ":
+                                case "APREQUEST":
+                                    responseType = "AP-REP";
+                                    responseContent = "Взаимная аутентификация подтверждена (демо)";
+                                    break;
+
+                                default:
+                                    responseContent = $"Неизвестный тип запроса: '{reqType}'";
+                                    break;
+                            }
+                        }
+                        else
+                        {
+                            responseContent = "Отсутствует поле 'type' или оно не строка";
+                        }
                     }
-                    else if (message.Contains("TGS-REQ"))
+                    catch (JsonException jsonEx)
                     {
-                        responseType = "TGS-REP";
-                        responseContent = $"Сервисный тикет выдан для {clientPrincipal} (демо)";
+                        responseContent = $"Невалидный JSON: {jsonEx.Message}";
                     }
-                    else if (message.Contains("AP-REQ"))
+                    catch (Exception ex)
                     {
-                        responseType = "AP-REP";
-                        responseContent = "Взаимная аутентификация подтверждена (демо)";
+                        responseContent = $"Ошибка обработки: {ex.Message}";
                     }
 
                     var responseObj = new
@@ -122,8 +171,8 @@ namespace KerberosOverRabbitMq.Kdc
                         timestamp = DateTime.UtcNow.ToString("o")
                     };
 
-                    string json = JsonSerializer.Serialize(responseObj);
-                    var replyBody = Encoding.UTF8.GetBytes(json);
+                    string jsonResponse = JsonSerializer.Serialize(responseObj);
+                    var replyBody = Encoding.UTF8.GetBytes(jsonResponse);
 
                     string replyRoutingKey = $"kerberos.client.{clientPrincipal}";
 
@@ -132,24 +181,20 @@ namespace KerberosOverRabbitMq.Kdc
                         routingKey: replyRoutingKey,
                         body: replyBody);
 
-                    Console.WriteLine($" → {responseType} отправлен клиенту {clientPrincipal}");
+                    Console.WriteLine($" → {responseType} отправлен клиенту {clientPrincipal} (routing: {replyRoutingKey})");
 
-                    channel.BasicAckAsync(ea.DeliveryTag, false);
+                    await channel.BasicAckAsync(ea.DeliveryTag, false);
                 }
                 catch (Exception ex)
                 {
-                    Console.Error.WriteLine($"Ошибка обработки: {ex.Message}");
-                    channel.BasicAckAsync(ea.DeliveryTag, false);
+                    Console.Error.WriteLine($"Критическая ошибка обработки: {ex.Message}");
+                    await channel.BasicNackAsync(ea.DeliveryTag, false, true);
                 }
-
-                await Task.CompletedTask;
             };
 
             await channel.BasicConsumeAsync(queueName, autoAck: false, consumer);
 
-            Console.WriteLine("KDC готов принимать запросы. Нажмите Enter для завершения...");
-            Console.ReadLine();
+            Console.WriteLine("KDC запущен и слушает запросы...");
         }
-
     }
 }
