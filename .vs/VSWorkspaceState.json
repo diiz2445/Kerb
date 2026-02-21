@@ -2,8 +2,10 @@
   "ExpandedNodes": [
     "",
     "\\Server",
-    "\\Server\\KerberosServer"
+    "\\Server\\KerberosServer",
+    "\\Server\\KerberosServer\\bin",
+    "\\Server\\KerberosServer\\KerberosFuncs"
   ],
-  "SelectedNode": "\\Server\\KerberosServer\\Program.cs",
+  "SelectedNode": "\\Server\\KerberosServer.sln",
   "PreviewInSolutionExplorer": false
 }
