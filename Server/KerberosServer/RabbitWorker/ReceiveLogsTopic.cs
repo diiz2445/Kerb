@@ -51,7 +51,7 @@ namespace KerberosOverRabbitMq.Client
 
             // Вариант 3 — если метод уже async и ты хочешь минимум строк
             string replyQueue = (await channel.QueueDeclareAsync($"client.{MyPrincipal}.replies",
-                durable: false,
+                durable: true,
                 exclusive: true,
                 autoDelete: true)).QueueName;
 
