@@ -5,37 +5,24 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 
-namespace KerberosPlayground
+namespace SimpleKerberos
 {
-    /// <summary>
-    /// Единый KDC-сервер, который содержит AS и TGS (как в реальном Kerberos)
-    /// </summary>
     public class KerberosKDC
     {
-        // Хранилище пользователей: principal → долгосрочный ключ
         private readonly Dictionary<string, byte[]> _userKeys = new();
-
-        // Хранилище сервисов: service principal → долгосрочный ключ
         private readonly Dictionary<string, byte[]> _serviceKeys = new();
-
-        // Ключ krbtgt (TGT шифруется именно им)
         private readonly byte[] _krbtgtKey;
-
-        // Зарегистрированные TGT (для простоты храним в памяти)
-        // В реальности — база + проверка revocation + timeout
-        private readonly Dictionary<string, TicketContent> _activeTGTs = new(); // sessionKey → ticket content
+        private readonly Dictionary<string, TicketContent> _activeTGTs = new();
 
         public KerberosKDC()
         {
-            _krbtgtKey = DeriveKey("krbtgt@EXAMPLE.COM-VeryLongAndSecureKey-2025!");
+            _krbtgtKey = DeriveKey("krbtgt/EXAMPLE.COM#super-secure-2025-key!");
 
-            // Примеры пользователей
             RegisterUser("alice@EXAMPLE.COM", "alicepass123");
-            RegisterUser("bob@EXAMPLE.COM", "bobsecret456");
+            RegisterUser("bob@EXAMPLE.COM", "bobsecret2025");
 
-            // Примеры сервисов
-            RegisterService("HTTP/web.example.com@EXAMPLE.COM", "service-http-secret-789");
-            RegisterService("MSSQLSvc/sql.example.com:1433@EXAMPLE.COM", "sql-service-key-321");
+            RegisterService("HTTP/web.example.com@EXAMPLE.COM", "http-svc-pass-789");
+            RegisterService("MSSQLSvc/sql.example.com:1433@EXAMPLE.COM", "mssql-svc-key-321");
         }
 
         public void RegisterUser(string principal, string password)
@@ -48,285 +35,233 @@ namespace KerberosPlayground
             _serviceKeys[servicePrincipal.ToUpperInvariant()] = DeriveKey(password);
         }
 
-        // ───────────────────────────────────────────────
-        // AS часть — выдача TGT
-        // ───────────────────────────────────────────────
+        public byte[] ProcessASRequest(byte[] requestJsonBytes) => ProcessRequest(requestJsonBytes, true);
+        public byte[] ProcessTGSRequest(byte[] requestJsonBytes) => ProcessRequest(requestJsonBytes, false);
 
-        public ASResponse RequestTGT(ASRequest req)
+        private byte[] ProcessRequest(byte[] requestJsonBytes, bool isAS)
         {
-            string client = req.ClientPrincipal?.ToUpperInvariant();
-            if (string.IsNullOrEmpty(client) || !_userKeys.TryGetValue(client, out byte[] clientKey))
-                return Error("Пользователь не найден");
-
-            if (!req.RequestedService.Equals("krbtgt/EXAMPLE.COM@EXAMPLE.COM", StringComparison.OrdinalIgnoreCase))
-                return Error("AS выдаёт только TGT");
-
-            // Проверка pre-authentication
-            if (!ValidatePreAuth(client, req.PreAuthEncryptedTimestamp, clientKey))
-                return Error("Pre-authentication failed");
-
-            byte[] sessionKeyC_TGS = GenerateSessionKey();
-
-            DateTime now = DateTime.UtcNow;
-            DateTime end = now.AddHours(10);
-
-            var tgtContent = new TicketContent
-            {
-                Client = client,
-                SessionKey = sessionKeyC_TGS,
-                Service = "krbtgt/EXAMPLE.COM@EXAMPLE.COM",
-                StartTime = now,
-                EndTime = end,
-                RenewTill = end.AddDays(7)
-            };
-
-            // Сохраняем TGT в "базе" (по session key как идентификатору)
-            string tgtId = Convert.ToBase64String(sessionKeyC_TGS);
-            _activeTGTs[tgtId] = tgtContent;
-
-            byte[] encryptedTGT = Encrypt(tgtContent.ToJsonBytes(), _krbtgtKey);
-
-            var clientPart = new ClientPart
-            {
-                SessionKey = sessionKeyC_TGS,
-                Ticket = encryptedTGT,
-                StartTime = now,
-                EndTime = end
-            };
-
-            byte[] encryptedToClient = Encrypt(clientPart.ToJsonBytes(), clientKey);
-
-            return new ASResponse
-            {
-                Success = true,
-                EncryptedClientPart = encryptedToClient
-            };
-        }
-
-        // ───────────────────────────────────────────────
-        // TGS часть — выдача сервисного билета
-        // ───────────────────────────────────────────────
-
-        public TGSResponse RequestServiceTicket(TGSRequest req)
-        {
-            if (req.TGT == null || req.TGT.Length == 0)
-                return ErrorTGS("TGT отсутствует");
-
-            // Расшифровываем TGT ключом krbtgt
-            byte[] tgtPlain;
             try
             {
-                tgtPlain = Decrypt(req.TGT, _krbtgtKey);
+                string json = Encoding.UTF8.GetString(requestJsonBytes);
+                var req = JsonSerializer.Deserialize<RequestJson>(json)
+                    ?? throw new Exception("Невалидный JSON");
+
+                if (isAS)
+                {
+                    return HandleAS(req);
+                }
+                else
+                {
+                    return HandleTGS(req);
+                }
             }
-            catch
+            catch (Exception ex)
             {
-                return ErrorTGS("Невалидный или повреждённый TGT");
+                return ErrorResponseBytes(ex.Message);
             }
+        }
 
-            var tgtContent = JsonSerializer.Deserialize<TicketContent>(Encoding.UTF8.GetString(tgtPlain));
-            if (tgtContent == null || DateTime.UtcNow > tgtContent.EndTime)
-                return ErrorTGS("TGT истёк или повреждён");
+        private byte[] HandleAS(RequestJson req)
+        {
+            string client = req.Client?.ToUpperInvariant();
+            if (string.IsNullOrEmpty(client) || !_userKeys.TryGetValue(client, out var clientKey))
+                return ErrorResponseBytes("Пользователь не найден");
 
-            // Проверяем аутентификатор клиента
-            if (!ValidateAuthenticator(req.Authenticator, tgtContent.SessionKey))
-                return ErrorTGS("Аутентификатор не прошёл проверку");
+            if (!string.Equals(req.Service, "krbtgt/EXAMPLE.COM@EXAMPLE.COM", StringComparison.OrdinalIgnoreCase))
+                return ErrorResponseBytes("AS выдаёт только TGT");
 
-            string service = req.ServicePrincipal?.ToUpperInvariant();
-            if (string.IsNullOrEmpty(service) || !_serviceKeys.TryGetValue(service, out byte[] serviceKey))
-                return ErrorTGS("Сервис не найден");
+            byte[] encTs = Convert.FromBase64String(req.PreAuth ?? "");
+            if (!ValidatePreAuth(client, encTs, clientKey))
+                return ErrorResponseBytes("Pre-authentication failed");
 
-            byte[] sessionKeyC_Service = GenerateSessionKey();
+            byte[] sessionKey = RandomNumberGenerator.GetBytes(32);
 
-            DateTime now = DateTime.UtcNow;
-            DateTime end = now.AddHours(8);
-
-            var serviceTicketContent = new TicketContent
+            var now = DateTime.UtcNow;
+            var tgt = new TicketContent
             {
-                Client = tgtContent.Client,
-                SessionKey = sessionKeyC_Service,
-                Service = service,
-                StartTime = now,
-                EndTime = end,
-                RenewTill = end.AddHours(24)
+                Client = client,
+                SessionKey = sessionKey,
+                Service = "krbtgt/EXAMPLE.COM@EXAMPLE.COM",
+                Start = now,
+                End = now.AddHours(10),
+                RenewTill = now.AddDays(7)
             };
 
-            byte[] encryptedServiceTicket = Encrypt(serviceTicketContent.ToJsonBytes(), serviceKey);
+            string tgtId = Convert.ToBase64String(sessionKey);
+            _activeTGTs[tgtId] = tgt;
 
-            var clientReplyPart = new ClientServicePart
+            byte[] encTGT = Encrypt(tgt.ToJsonBytes(), _krbtgtKey);
+
+            var reply = new ReplyPart
             {
-                SessionKey = sessionKeyC_Service,
-                Ticket = encryptedServiceTicket,
-                StartTime = now,
-                EndTime = end
+                SessionKey = sessionKey,
+                Ticket = encTGT,
+                Start = now,
+                End = now.AddHours(10)
             };
 
-            byte[] encryptedToClient = Encrypt(clientReplyPart.ToJsonBytes(), tgtContent.SessionKey);
+            byte[] encReply = Encrypt(reply.ToJsonBytes(), clientKey);
 
-            return new TGSResponse
+            return SuccessResponseBytes(Convert.ToBase64String(encReply));
+        }
+
+        private byte[] HandleTGS(RequestJson req)
+        {
+            if (string.IsNullOrEmpty(req.TGT))
+                return ErrorResponseBytes("TGT отсутствует");
+
+            byte[] tgtBytes = Convert.FromBase64String(req.TGT);
+            byte[] tgtPlain = Decrypt(tgtBytes, _krbtgtKey);
+            var tgt = JsonSerializer.Deserialize<TicketContent>(Encoding.UTF8.GetString(tgtPlain))
+                ?? throw new Exception("Повреждён TGT");
+
+            if (DateTime.UtcNow > tgt.End)
+                return ErrorResponseBytes("TGT истёк");
+
+            byte[] encAuth = Convert.FromBase64String(req.Authenticator ?? "");
+            if (!ValidateAuthenticator(encAuth, tgt.SessionKey))
+                return ErrorResponseBytes("Аутентификатор недействителен");
+
+            string svc = req.Service?.ToUpperInvariant();
+            if (string.IsNullOrEmpty(svc) || !_serviceKeys.TryGetValue(svc, out var svcKey))
+                return ErrorResponseBytes("Сервис не найден");
+
+            byte[] sessionKeyCS = RandomNumberGenerator.GetBytes(32);
+
+            var now = DateTime.UtcNow;
+            var ticket = new TicketContent
             {
-                Success = true,
-                EncryptedClientPart = encryptedToClient
+                Client = tgt.Client,
+                SessionKey = sessionKeyCS,
+                Service = svc,
+                Start = now,
+                End = now.AddHours(8),
+                RenewTill = now.AddHours(24)
             };
+
+            byte[] encTicket = Encrypt(ticket.ToJsonBytes(), svcKey);
+
+            var reply = new ReplyPart
+            {
+                SessionKey = sessionKeyCS,
+                Ticket = encTicket,
+                Start = now,
+                End = now.AddHours(8)
+            };
+
+            byte[] encReply = Encrypt(reply.ToJsonBytes(), tgt.SessionKey);
+
+            return SuccessResponseBytes(Convert.ToBase64String(encReply));
         }
 
         // ───────────────────────────────────────────────
-        // Вспомогательные методы криптографии (Aes-CBC из предыдущего примера)
+        // Криптография
         // ───────────────────────────────────────────────
 
-        private byte[] Encrypt(byte[] data, byte[] key)
+        private byte[] Encrypt(byte[] plaintext, byte[] key)
         {
             using var aes = Aes.Create();
-            aes.Key = key.Length switch
-            {
-                16 => key,
-                24 => key,
-                32 => key,
-                _ => throw new ArgumentException("Ключ должен быть 16, 24 или 32 байта")
-            };
+            aes.Key = key;
+            aes.GenerateIV();
             aes.Mode = CipherMode.CBC;
             aes.Padding = PaddingMode.PKCS7;
-            aes.GenerateIV(); // каждый раз новый IV!
 
             using var ms = new MemoryStream();
-            ms.Write(aes.IV, 0, aes.IV.Length); // IV в начале!
+            ms.Write(aes.IV, 0, aes.IV.Length);
 
             using (var cs = new CryptoStream(ms, aes.CreateEncryptor(), CryptoStreamMode.Write))
-            {
-                cs.Write(data, 0, data.Length);
-            }
+                cs.Write(plaintext, 0, plaintext.Length);
 
             return ms.ToArray();
         }
 
-        private byte[] Decrypt(byte[] data, byte[] key)
+        private byte[] Decrypt(byte[] ciphertext, byte[] key)
         {
-            if (data.Length < 16) throw new CryptographicException("Слишком короткие данные");
+            if (ciphertext.Length < 16) throw new Exception("Слишком короткие данные");
 
-            byte[] iv = new byte[16];
-            Array.Copy(data, 0, iv, 0, 16);
-
+            byte[] iv = ciphertext[..16];
             using var aes = Aes.Create();
-            aes.Key = key.Length switch
-            {
-                16 => key,
-                24 => key,
-                32 => key,
-                _ => throw new ArgumentException("Неверная длина ключа")
-            };
+            aes.Key = key;
             aes.IV = iv;
             aes.Mode = CipherMode.CBC;
             aes.Padding = PaddingMode.PKCS7;
 
-            using var ms = new MemoryStream(data, 16, data.Length - 16);
+            using var ms = new MemoryStream(ciphertext, 16, ciphertext.Length - 16);
             using var cs = new CryptoStream(ms, aes.CreateDecryptor(), CryptoStreamMode.Read);
             using var result = new MemoryStream();
             cs.CopyTo(result);
-
             return result.ToArray();
         }
 
         private byte[] DeriveKey(string password)
         {
-            // Упрощённо — в реальности PBKDF2 + Kerberos string-to-key
             using var sha256 = SHA256.Create();
-            return sha256.ComputeHash(Encoding.UTF8.GetBytes(password + "EXAMPLE.COM"));
+            return sha256.ComputeHash(Encoding.UTF8.GetBytes(password + "@EXAMPLE.COM"));
         }
 
-        private byte[] GenerateSessionKey() => RandomNumberGenerator.GetBytes(32);
-
-        private bool ValidatePreAuth(string principal, byte[] encTs, byte[] clientKey)
+        private bool ValidatePreAuth(string user, byte[] encTs, byte[] key)
         {
             try
             {
-                byte[] ts = Decrypt(encTs, clientKey);
-                var time = DateTime.Parse(Encoding.UTF8.GetString(ts));
+                var ts = Encoding.UTF8.GetString(Decrypt(encTs, key));
+                var time = DateTime.Parse(ts);
                 return Math.Abs((DateTime.UtcNow - time).TotalMinutes) <= 5;
             }
-            catch
-            {
-                return false;
-            }
+            catch { return false; }
         }
 
         private bool ValidateAuthenticator(byte[] encAuth, byte[] sessionKey)
         {
             try
             {
-                byte[] auth = Decrypt(encAuth, sessionKey);
-                var authObj = JsonSerializer.Deserialize<Authenticator>(Encoding.UTF8.GetString(auth));
-                return Math.Abs((DateTime.UtcNow - authObj.Timestamp).TotalMinutes) <= 5;
+                var json = Encoding.UTF8.GetString(Decrypt(encAuth, sessionKey));
+                var auth = JsonSerializer.Deserialize<Authenticator>(json);
+                return Math.Abs((DateTime.UtcNow - auth!.Time).TotalMinutes) <= 5;
             }
-            catch
-            {
-                return false;
-            }
+            catch { return false; }
         }
 
-        private ASResponse Error(string msg) => new() { Success = false, ErrorMessage = msg };
-        private TGSResponse ErrorTGS(string msg) => new() { Success = false, ErrorMessage = msg };
+        private static byte[] SuccessResponseBytes(string base64Data) =>
+            Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new { Success = true, Data = base64Data }));
+
+        private static byte[] ErrorResponseBytes(string msg) =>
+            Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new { Success = false, Error = msg }));
     }
 
-    // DTO-структуры (упрощённые)
-
-    public class ASRequest
+    // Общие модели
+    public class RequestJson
     {
-        public string ClientPrincipal { get; set; }
-        public string RequestedService { get; set; } = "krbtgt/EXAMPLE.COM@EXAMPLE.COM";
-        public byte[] PreAuthEncryptedTimestamp { get; set; }
+        public string? Client { get; set; }
+        public string? Service { get; set; }
+        public string? PreAuth { get; set; }        // base64
+        public string? TGT { get; set; }           // base64
+        public string? Authenticator { get; set; } // base64
     }
 
-    public class ASResponse
+    public class ReplyPart
     {
-        public bool Success { get; set; }
-        public byte[] EncryptedClientPart { get; set; }
-        public string ErrorMessage { get; set; }
-    }
+        public byte[] SessionKey { get; set; } = Array.Empty<byte>();
+        public byte[] Ticket { get; set; } = Array.Empty<byte>();
+        public DateTime Start { get; set; }
+        public DateTime End { get; set; }
 
-    public class TGSRequest
-    {
-        public byte[] TGT { get; set; }
-        public byte[] Authenticator { get; set; }
-        public string ServicePrincipal { get; set; }
-    }
-
-    public class TGSResponse
-    {
-        public bool Success { get; set; }
-        public byte[] EncryptedClientPart { get; set; }
-        public string ErrorMessage { get; set; }
-    }
-
-    public class ClientPart
-    {
-        public byte[] SessionKey { get; set; }
-        public byte[] Ticket { get; set; }
-        public DateTime StartTime { get; set; }
-        public DateTime EndTime { get; set; }
-        public byte[] ToJsonBytes() => Encoding.UTF8.GetBytes(JsonSerializer.Serialize(this));
-    }
-
-    public class ClientServicePart
-    {
-        public byte[] SessionKey { get; set; }
-        public byte[] Ticket { get; set; }
-        public DateTime StartTime { get; set; }
-        public DateTime EndTime { get; set; }
         public byte[] ToJsonBytes() => Encoding.UTF8.GetBytes(JsonSerializer.Serialize(this));
     }
 
     public class TicketContent
     {
-        public string Client { get; set; }
-        public byte[] SessionKey { get; set; }
-        public string Service { get; set; }
-        public DateTime StartTime { get; set; }
-        public DateTime EndTime { get; set; }
+        public string? Client { get; set; }
+        public byte[] SessionKey { get; set; } = Array.Empty<byte>();
+        public string? Service { get; set; }
+        public DateTime Start { get; set; }
+        public DateTime End { get; set; }
         public DateTime RenewTill { get; set; }
+
         public byte[] ToJsonBytes() => Encoding.UTF8.GetBytes(JsonSerializer.Serialize(this));
     }
 
     public class Authenticator
     {
-        public DateTime Timestamp { get; set; }
+        public DateTime Time { get; set; } = DateTime.UtcNow;
     }
 }

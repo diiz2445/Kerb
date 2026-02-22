@@ -16,7 +16,6 @@
 //            UserName = config["RABBITMQ_USERNAME"] ?? "guest",
 //            Password = config["RABBITMQ_PASSWORD"] ?? "guest",
 //            VirtualHost = config["RABBITMQ_VIRTUAL_HOST"] ?? "/",
-//            DispatchConsumersAsync = true, // для async потребителей
 //            AutomaticRecoveryEnabled = true
 //        };
 
