@@ -6,6 +6,6 @@
     "\\Server\\KerberosServer\\bin",
     "\\Server\\KerberosServer\\KerberosFuncs"
   ],
-  "SelectedNode": "\\Server\\KerberosServer.sln",
+  "SelectedNode": "\\Server\\KerberosServer\\Program.cs",
   "PreviewInSolutionExplorer": false
 }
