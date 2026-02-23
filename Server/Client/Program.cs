@@ -4,25 +4,23 @@ using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
 using System;
 using System.Security.Cryptography;
+using System.Security.Principal;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
 
-namespace KerberosKdcSimple
+namespace Client
 {
-    class Program
+    internal class Program
     {
         private static readonly byte[] KeyAlice = { 0x06, 0xbd, 0xf0, 0xf9, 0xb7, 0x32, 0x97, 0x6f, 0xd8, 0x25, 0x23, 0xb1, 0xf0, 0xee, 0x19, 0x30 };
-        private static readonly byte[] KeyBob = { 0xf8, 0x0b, 0x68, 0x2d, 0xdb, 0x63, 0xfc, 0x6f, 0xcb, 0x94, 0x05, 0xc0, 0x70, 0x7c, 0x86, 0x96 };
-        
 
         static async Task Main(string[] args)
         {
-            
-            Console.WriteLine("Kerberos KDC - простой сервер RabbitMQ (один файл)");
+            Console.WriteLine("Клиент для Kerberso");
             Console.WriteLine("Запуск... Ctrl+C для выхода\n");
 
-            string envPath = Path.Combine(Directory.GetCurrentDirectory(), "Rabbit.env");
+            string envPath = Path.Combine(Directory.GetCurrentDirectory(), "RabbitClient.env");
             // 1. Загружаем .env + переменные окружения
             //Env.Load(); // загружает .env из текущей директории
             Env.Load(envPath);
@@ -37,9 +35,10 @@ namespace KerberosKdcSimple
             string password = config["RABBITMQ_PASSWORD"] ?? "guest";
             string virtualHost = config["RABBITMQ_VIRTUAL_HOST"] ?? "/";
             string exchangeName = config["KERBEROS_EXCHANGE_NAME"] ?? "kerberos.exchange";
-            string topicPattern = config["KERBEROS_TOPIC_PATTERN"] ?? "kerberos.Forward.client.#";
+            string topicPattern = config["KERBEROS_TOPIC_PATTERN"] ?? "kerberos.client.Forward.#";
             string ttl = config["MESSAGE_TTL"] ?? "5";
             string replyTopicPattern = config["REPLY_TOPIC_PATTERN"] ?? "kerberos.client.#.reply";
+            string ReplyroutingKey = $"kerberos.client.Reply.alice";
             //string queueName = config["KERBEROS_QUEUE_NAME"] ?? "kdc.requests";
             // ───────────────────────────────────────────────
 
@@ -61,14 +60,16 @@ namespace KerberosKdcSimple
 
             await channel.ExchangeDeclareAsync(exchange: exchangeName, type: ExchangeType.Topic, durable: true);
 
-            // declare a server-named queue
             QueueDeclareOk queueDeclareResult = await channel.QueueDeclareAsync();
             string queueName = queueDeclareResult.QueueName;
 
-            await channel.QueueBindAsync(queue: queueName, exchange: exchangeName, routingKey: topicPattern);
+            await channel.QueueBindAsync(queue: queueName, exchange: exchangeName, routingKey:ReplyroutingKey );
             Console.WriteLine(DateTime.UtcNow);
 
-            Console.WriteLine(" [*] Waiting for messages. To exit press CTRL+C");
+            string body = $"";
+            string TopicName = topicPattern + "alice";
+            //channel.BasicPublishAsync(exchangeName, routingKey: TopicName,body:);
+            Console.WriteLine($"Message Published at {ReplyroutingKey}");
 
             var consumer = new AsyncEventingBasicConsumer(channel);
             consumer.ReceivedAsync += (model, ea) =>
@@ -80,60 +81,16 @@ namespace KerberosKdcSimple
                 Console.WriteLine($" [x] Received '{routingKey}':'{message}'");
 
 
-                MessageBody messageBody;
-                try
-                {
-                    messageBody = new MessageBody(message);
-                    if (messageBody.Date - DateTime.UtcNow < TimeSpan.FromMinutes(double.Parse(ttl)))//Проверка, что время между отправкой и получением менее TTL (Default = 5 минут)
-                    {
-                        /*
-                            Парсим сообщение
-                            Проверяем временную метку<5 минут по стандарту
-                            формируем пакет для Алисы и Бобика, шифруем соответствующими ключами
-                        */
-
-                        //парсим на части
-                        var msg = messageBody.Body;
-                        var parts = msg.Split(',');
-                        if (parts.Length == 2)//Первое подключение, где Алиса говорит, что хочет поговорить с Бобиком
-                        {
-                            Console.WriteLine("Count:2\n");
-                            string from = parts[0].Trim().ToLower();
-                            string to = parts[1].Trim().ToLower();
-                            //Далее идет отправка сообщения назад
-
-                            //Собираем сообщение для отправки назад
-                            DateTime dateServ = DateTime.UtcNow;
-                            string messageTTL = ttl;
-                            byte[] sessionKey = KerberosCrypto.GenerateSessionKey();
-                            string BackMessage = dateServ+","+messageTTL+","+sessionKey.ToString();
-
-                            string EncryptedAlice = KerberosCrypto.Encrypt(BackMessage + "," + to,KeyAlice);
-                            string EncryptedBob = KerberosCrypto.Encrypt(BackMessage + "," + from, KeyBob);
-                            //Отправка сообщения назад
-                            byte[] MessageToSend = Encoding.UTF8.GetBytes(EncryptedAlice+","+EncryptedBob);
-                            byte[] bytesEA = Encoding.UTF8.GetBytes(EncryptedAlice);
-                            byte[] bytesEB = Encoding.UTF8.GetBytes(EncryptedBob);
-
-                            string ReplyroutingKey = $"kerberos.client.Reply.{parts[0]}";
-                            channel.BasicPublishAsync("kerberos.exchange", ReplyroutingKey, MessageToSend);
-
-                            Console.WriteLine($"Message Published at {ReplyroutingKey}");
-                        }
-                    }
-
-                }
-                catch(Exception e) { Console.WriteLine(e.Message); }
 
                 return Task.CompletedTask;
-
             };
 
             await channel.BasicConsumeAsync(queueName, autoAck: true, consumer: consumer);
             Console.ReadLine();
         }
-        
+
     }
+
     class MessageBody
     {
         internal DateTime Date;
@@ -146,7 +103,7 @@ namespace KerberosKdcSimple
             this.Body = strings[1];
         }
     }
-    
+
     public static class KerberosCrypto
     {
         public static string Encrypt(string plainText, byte[] key)
@@ -238,5 +195,4 @@ namespace KerberosKdcSimple
         public static string EncryptChat(string message, byte[] sessionKey) => Encrypt(message, sessionKey);
         public static string DecryptChat(string encMessage, byte[] sessionKey) => Decrypt(encMessage, sessionKey);
     }
-
 }
