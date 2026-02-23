@@ -7,15 +7,15 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
-
-namespace Client
+namespace ClientBob
 {
     internal class Program
     {
-        private static readonly byte[] KeyAlice = { 0x06, 0xbd, 0xf0, 0xf9, 0xb7, 0x32, 0x97, 0x6f, 0xd8, 0x25, 0x23, 0xb1, 0xf0, 0xee, 0x19, 0x30 };
+        private static readonly byte[] KeyBob = { 0xf8, 0x0b, 0x68, 0x2d, 0xdb, 0x63, 0xfc, 0x6f, 0xcb, 0x94, 0x05, 0xc0, 0x70, 0x7c, 0x86, 0x96 };
 
         static async Task Main(string[] args)
         {
+            bool Connected = false;
             Console.WriteLine("Клиент для Kerberso");
             Console.WriteLine("Запуск... Ctrl+C для выхода\n");
 
@@ -37,7 +37,7 @@ namespace Client
             string topicPattern = config["KERBEROS_TOPIC_PATTERN"] ?? "kerberos.client.Forward.";
             string ttl = config["MESSAGE_TTL"] ?? "5";
             string replyTopicPattern = config["REPLY_TOPIC_PATTERN"] ?? "kerberos.client.#.reply";
-            string ReplyroutingKey = $"kerberos.client.Reply.alice";
+            string ReplyroutingKey = $"kerberos.client.Reply.bob";
             //string queueName = config["KERBEROS_QUEUE_NAME"] ?? "kdc.requests";
             // ───────────────────────────────────────────────
 
@@ -62,20 +62,14 @@ namespace Client
             QueueDeclareOk queueDeclareResult = await channel.QueueDeclareAsync();
             string queueName = queueDeclareResult.QueueName;
 
-            await channel.QueueBindAsync(queue: queueName, exchange: exchangeName, routingKey:ReplyroutingKey );
+            await channel.QueueBindAsync(queue: queueName, exchange: exchangeName, routingKey: ReplyroutingKey);
             Console.WriteLine(DateTime.UtcNow);
 
-            string body = $"23.02.2026 18:22:12|alice,bob";//Сообщение для KDC о желании поговорить с Бобиком
-            string To = "bob";
-            byte[] bytes = Encoding.UTF8.GetBytes( body );
-            string TopicName = topicPattern + "alice";
-            Thread.Sleep(2000);
-            channel.BasicPublishAsync(exchangeName, routingKey: TopicName,body:bytes);
-            Console.WriteLine($"Message Published at {ReplyroutingKey}");
+            
+           
+            string TopicName = topicPattern + "bob";
+            Thread.Sleep(3000);
 
-
-
-            //Получаем сообщение
             var consumer = new AsyncEventingBasicConsumer(channel);
             consumer.ReceivedAsync += (model, ea) =>
             {
@@ -86,23 +80,12 @@ namespace Client
                 Console.WriteLine($" [x] Received '{routingKey}':'{Recievedmessage}'");
 
                 string[] ParsedMessage = Recievedmessage.Split(",");
-                string MyRecievdData = KerberosCrypto.Decrypt(ParsedMessage[0],KeyAlice);
+                string MyRecievdData = KerberosCrypto.Decrypt(ParsedMessage[1], KeyBob);
 
                 string[] MyData = MyRecievdData.Split(',');
                 Console.WriteLine(MyRecievdData);
 
-                byte[] SessionKey = Convert.FromBase64String(MyData[2]);
-
-
-                //Готовим сообщение для Боба
-                string SessionPart = KerberosCrypto.Encrypt(MyData[0]+",Alice", SessionKey);
-                string MessageForBob = SessionPart + "," + ParsedMessage[1];
-                byte[] bytesMessageForBob = Encoding.UTF8.GetBytes(MessageForBob);
-
-                //Публикуем Бобу сообщение
-                channel.BasicPublishAsync(exchangeName, "kerberos.client.Reply.bob", bytesMessageForBob);
-
-
+                Byte[] SessionKey = Convert.FromBase64String(MyData[2]);
                 return Task.CompletedTask;
             };
 
