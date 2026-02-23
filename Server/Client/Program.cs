@@ -35,7 +35,7 @@ namespace Client
             string password = config["RABBITMQ_PASSWORD"] ?? "guest";
             string virtualHost = config["RABBITMQ_VIRTUAL_HOST"] ?? "/";
             string exchangeName = config["KERBEROS_EXCHANGE_NAME"] ?? "kerberos.exchange";
-            string topicPattern = config["KERBEROS_TOPIC_PATTERN"] ?? "kerberos.client.Forward.#";
+            string topicPattern = config["KERBEROS_TOPIC_PATTERN"] ?? "kerberos.client.Forward.";
             string ttl = config["MESSAGE_TTL"] ?? "5";
             string replyTopicPattern = config["REPLY_TOPIC_PATTERN"] ?? "kerberos.client.#.reply";
             string ReplyroutingKey = $"kerberos.client.Reply.alice";
@@ -76,12 +76,17 @@ namespace Client
             {
                 Console.WriteLine(topicPattern);
                 var body = ea.Body.ToArray();
-                var message = Encoding.UTF8.GetString(body);
+                var Recievedmessage = Encoding.UTF8.GetString(body);
                 var routingKey = ea.RoutingKey;
-                Console.WriteLine($" [x] Received '{routingKey}':'{message}'");
+                Console.WriteLine($" [x] Received '{routingKey}':'{Recievedmessage}'");
 
+                string[] ParsedMessage = Recievedmessage.Split(",");
+                string MyRecievdData = KerberosCrypto.Decrypt(ParsedMessage[0],KeyAlice);
 
+                string[] MyData = MyRecievdData.Split(',');
+                Console.WriteLine(MyRecievdData);
 
+                Byte[] SessionKey = Convert.FromBase64String(MyData[2]);
                 return Task.CompletedTask;
             };
 

@@ -37,7 +37,7 @@ namespace KerberosKdcSimple
             string password = config["RABBITMQ_PASSWORD"] ?? "guest";
             string virtualHost = config["RABBITMQ_VIRTUAL_HOST"] ?? "/";
             string exchangeName = config["KERBEROS_EXCHANGE_NAME"] ?? "kerberos.exchange";
-            string topicPattern = config["KERBEROS_TOPIC_PATTERN"] ?? "kerberos.Forward.client.#";
+            string topicPattern = config["KERBEROS_TOPIC_PATTERN"] ?? "kerberos.Forward.client.Forward.#";
             string ttl = config["MESSAGE_TTL"] ?? "5";
             string replyTopicPattern = config["REPLY_TOPIC_PATTERN"] ?? "kerberos.client.#.reply";
             //string queueName = config["KERBEROS_QUEUE_NAME"] ?? "kdc.requests";
@@ -106,7 +106,8 @@ namespace KerberosKdcSimple
                             DateTime dateServ = DateTime.UtcNow;
                             string messageTTL = ttl;
                             byte[] sessionKey = KerberosCrypto.GenerateSessionKey();
-                            string BackMessage = dateServ+","+messageTTL+","+sessionKey.ToString();
+                            string strSessionKey = Convert.ToBase64String(sessionKey);
+                            string BackMessage = dateServ+","+messageTTL+","+strSessionKey;
 
                             string EncryptedAlice = KerberosCrypto.Encrypt(BackMessage + "," + to,KeyAlice);
                             string EncryptedBob = KerberosCrypto.Encrypt(BackMessage + "," + from, KeyBob);
