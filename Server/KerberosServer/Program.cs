@@ -67,7 +67,7 @@ namespace KerberosKdcSimple
             string queueName = queueDeclareResult.QueueName;
 
             await channel.QueueBindAsync(queue: queueName, exchange: "kerberos.exchange", routingKey: topicPattern);
-
+            Console.WriteLine(DateTime.UtcNow);
 
             Console.WriteLine(" [*] Waiting for messages. To exit press CTRL+C");
 
@@ -79,17 +79,19 @@ namespace KerberosKdcSimple
                 var routingKey = ea.RoutingKey;
                 Console.WriteLine($" [x] Received '{routingKey}':'{message}'");
 
+
                 MessageBody messageBody;
                 try
                 {
                     messageBody = new MessageBody(message);
-                    if (messageBody.Date - DateTime.UtcNow > TimeSpan.FromMinutes(double.Parse(ttl)))//Проверка, что время между отправкой и получением менее 5 минут
+                    if (messageBody.Date - DateTime.UtcNow < TimeSpan.FromMinutes(double.Parse(ttl)))//Проверка, что время между отправкой и получением менее 5 минут
                     {
                         //парсим на части
                         var msg = messageBody.Body;
                         var parts = msg.Split(',');
                         if (parts.Length == 2)//Первое подключение, где Алиса говорит, что хочет поговорить с Бобиком
                         {
+                            Console.WriteLine("Count:2\n");
                             string from = parts[0].Trim().ToLower();
                             string to = parts[1].Trim().ToLower();
                             //Далее идет отправка сообщения назад
@@ -98,7 +100,10 @@ namespace KerberosKdcSimple
                             DateTime dateServ = DateTime.UtcNow;
                             string messageTTL = ttl;
                             byte[] sessionKey = KerberosCrypto.GenerateSessionKey();
+                            string BackMessage = dateServ+","+messageTTL+","+sessionKey.ToString();
 
+                            string EncryptedAlice = KerberosCrypto.Encrypt(BackMessage + "," + to,KeyAlice);
+                            string EncryptedBob = KerberosCrypto.Encrypt(BackMessage + "," + from, KeyBob);
                             //Отправка сообщения назад
 
                         }
@@ -114,7 +119,7 @@ namespace KerberosKdcSimple
                     }
 
                 }
-                catch { }
+                catch(Exception e) { Console.WriteLine(e.Message); }
 
                 return Task.CompletedTask;
 
