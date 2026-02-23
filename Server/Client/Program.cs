@@ -66,9 +66,11 @@ namespace Client
             await channel.QueueBindAsync(queue: queueName, exchange: exchangeName, routingKey:ReplyroutingKey );
             Console.WriteLine(DateTime.UtcNow);
 
-            string body = $"";
+            string body = $"23.02.2026 18:22:12|alice,bob";
+            byte[] bytes = Encoding.UTF8.GetBytes( body );
             string TopicName = topicPattern + "alice";
-            //channel.BasicPublishAsync(exchangeName, routingKey: TopicName,body:);
+            Thread.Sleep(2000);
+            channel.BasicPublishAsync(exchangeName, routingKey: TopicName,body:bytes);
             Console.WriteLine($"Message Published at {ReplyroutingKey}");
 
             var consumer = new AsyncEventingBasicConsumer(channel);
@@ -99,6 +101,7 @@ namespace Client
     class MessageBody
     {
         internal DateTime Date;
+        internal string From;
         internal string Body;
 
         public MessageBody(string message)
