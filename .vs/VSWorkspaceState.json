@@ -3,9 +3,10 @@
     "",
     "\\Server",
     "\\Server\\KerberosServer",
+    "\\Server\\KerberosServer\\BasicRabbit",
     "\\Server\\KerberosServer\\bin",
-    "\\Server\\KerberosServer\\KerberosFuncs"
+    "\\Server\\KerberosServer\\KerberosPlayground"
   ],
-  "SelectedNode": "\\Server\\KerberosServer\\Program.cs",
+  "SelectedNode": "\\Server\\KerberosServer\\BasicRabbit\\ReceiveLogsTopic.cs",
   "PreviewInSolutionExplorer": false
 }
