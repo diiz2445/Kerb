@@ -6,6 +6,7 @@ using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
 using System;
 using System.Security.Cryptography;
+using System.Security.Principal;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -41,6 +42,7 @@ namespace KerberosKdcSimple
             string exchangeName = config["KERBEROS_EXCHANGE_NAME"] ?? "kerberos.exchange";
             string topicPattern = config["KERBEROS_TOPIC_PATTERN"] ?? "kerberos.client.#";
             string ttl = config["MESSAGE_TTL"] ?? "5";
+            string replyTopicPattern = config["REPLY_TOPIC_PATTERN"] ?? "kerberos.client.#.reply";
             //string queueName = config["KERBEROS_QUEUE_NAME"] ?? "kdc.requests";
             // ───────────────────────────────────────────────
 
@@ -74,6 +76,7 @@ namespace KerberosKdcSimple
             var consumer = new AsyncEventingBasicConsumer(channel);
             consumer.ReceivedAsync += (model, ea) =>
             {
+                Console.WriteLine(topicPattern);
                 var body = ea.Body.ToArray();
                 var message = Encoding.UTF8.GetString(body);
                 var routingKey = ea.RoutingKey;
@@ -86,6 +89,12 @@ namespace KerberosKdcSimple
                     messageBody = new MessageBody(message);
                     if (messageBody.Date - DateTime.UtcNow < TimeSpan.FromMinutes(double.Parse(ttl)))//Проверка, что время между отправкой и получением менее 5 минут
                     {
+                        /*
+                            Парсим сообщение
+                            Проверяем временную метку<5 минут по стандарту
+                            формируем пакет для Алисы и Бобика, шифруем соответствующими ключами
+                        */
+
                         //парсим на части
                         var msg = messageBody.Body;
                         var parts = msg.Split(',');
@@ -105,6 +114,10 @@ namespace KerberosKdcSimple
                             string EncryptedAlice = KerberosCrypto.Encrypt(BackMessage + "," + to,KeyAlice);
                             string EncryptedBob = KerberosCrypto.Encrypt(BackMessage + "," + from, KeyBob);
                             //Отправка сообщения назад
+
+                            string ReplyroutingKey = $"kerberos.client.{parts[0]}.Reply";
+                            channel.BasicPublishAsync("kerberos.exchange", routingKey, body);
+
 
                         }
                         else if (parts.Length == 4)//Добавлен тип аутентификации, автор сообщения
