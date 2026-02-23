@@ -3,9 +3,9 @@
     "",
     "\\Server",
     "\\Server\\KerberosServer",
-    "\\Server\\KerberosServer\\bin",
-    "\\Server\\KerberosServer\\KerberosFuncs"
+    "\\Server\\KerberosServer\\BasicRabbit",
+    "\\Server\\KerberosServer\\bin"
   ],
-  "SelectedNode": "\\Server\\KerberosServer.sln",
+  "SelectedNode": "\\Server\\KerberosServer\\KerberosServer.csproj",
   "PreviewInSolutionExplorer": false
 }
