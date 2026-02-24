@@ -215,8 +215,5 @@ namespace ClientBob
             return key;
         }
 
-        // ====================== ЧАТ ======================
-        public static string EncryptChat(string message, byte[] sessionKey) => Encrypt(message, sessionKey);
-        public static string DecryptChat(string encMessage, byte[] sessionKey) => Decrypt(encMessage, sessionKey);
     }
 }
