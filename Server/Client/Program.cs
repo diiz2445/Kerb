@@ -10,14 +10,15 @@ using System.Threading;
 
 namespace Client
 {
-    internal class Program
+    public class Program
     {
-        private static readonly byte[] KeyAlice = { 0x06, 0xbd, 0xf0, 0xf9, 0xb7, 0x32, 0x97, 0x6f, 0xd8, 0x25, 0x23, 0xb1, 0xf0, 0xee, 0x19, 0x30 };
-
+        public static Dictionary<string, byte[]> ConnectedChats = new Dictionary<string, byte[]>();
         static async Task Main(string[] args)
         {
             Console.WriteLine("Клиент для Kerberso");
             Console.WriteLine("Запуск... Ctrl+C для выхода\n");
+
+            Dictionary<string, byte[]> ConnectedChats= new Dictionary<string, byte[]>();
 
             string envPath = Path.Combine(Directory.GetCurrentDirectory(), "RabbitClient.env");
             // 1. Загружаем .env + переменные окружения
@@ -38,6 +39,8 @@ namespace Client
             string ttl = config["MESSAGE_TTL"] ?? "5";
             string replyTopicPattern = config["REPLY_TOPIC_PATTERN"] ?? "kerberos.client.#.reply";
             string ReplyroutingKey = $"kerberos.client.Reply.alice";
+            string ChatRoutingKey = "kerberos.chat.alice";
+            byte[] parsedKey = ParseHexStringWith0x(config["CRYPT_KEY"]);
             //string queueName = config["KERBEROS_QUEUE_NAME"] ?? "kdc.requests";
             // ───────────────────────────────────────────────
 
@@ -54,6 +57,8 @@ namespace Client
 
             };
 
+
+
             using var connection = await factory.CreateConnectionAsync();
             using var channel = await connection.CreateChannelAsync();
 
@@ -63,6 +68,12 @@ namespace Client
             string queueName = queueDeclareResult.QueueName;
 
             await channel.QueueBindAsync(queue: queueName, exchange: exchangeName, routingKey:ReplyroutingKey );
+            await channel.QueueBindAsync(
+                                        queue: queueName,
+                                        exchange: exchangeName,
+                                        routingKey: ChatRoutingKey                // kerberos.chat.alice
+            );
+
             Console.WriteLine(DateTime.UtcNow);
 
             string body = $"23.02.2026 18:22:12|alice,bob";//Сообщение для KDC о желании поговорить с Бобиком
@@ -85,48 +96,96 @@ namespace Client
                 var routingKey = ea.RoutingKey;
                 Console.WriteLine($" [x] Received '{routingKey}':'{Recievedmessage}'");
 
-                string[] ParsedMessage = Recievedmessage.Split(",");
-                string MyRecievdData = KerberosCrypto.Decrypt(ParsedMessage[0],KeyAlice);
+                if (routingKey == ReplyroutingKey)//Если ответ от KDC
+                {
+                    string[] ParsedMessage = Recievedmessage.Split(",");
+                    string MyRecievdData = KerberosCrypto.Decrypt(ParsedMessage[0], parsedKey);
 
-                string[] MyData = MyRecievdData.Split(',');
-                Console.WriteLine(MyRecievdData);
+                    string[] MyData = MyRecievdData.Split(',');
+                    Console.WriteLine(MyRecievdData);
 
-                byte[] SessionKey = Convert.FromBase64String(MyData[2]);
-
-
-                //Готовим сообщение для Боба
-                string SessionPart = KerberosCrypto.Encrypt(MyData[0]+",Alice", SessionKey);
-                string MessageForBob = SessionPart + "," + ParsedMessage[1];
-                byte[] bytesMessageForBob = Encoding.UTF8.GetBytes(MessageForBob);
-
-                //Публикуем Бобу сообщение
-                channel.BasicPublishAsync(exchangeName, "kerberos.client.Reply.bob", bytesMessageForBob);
+                    byte[] SessionKey = Convert.FromBase64String(MyData[2]);
 
 
-                return Task.CompletedTask;
+                    //Готовим сообщение для Боба
+                    string SessionPart = KerberosCrypto.Encrypt(MyData[0] + ",Alice", SessionKey);
+                    string MessageForBob = SessionPart + "," + ParsedMessage[1];
+                    byte[] bytesMessageForBob = Encoding.UTF8.GetBytes(MessageForBob);
+
+                    //Публикуем Бобу сообщение
+                    channel.BasicPublishAsync(exchangeName, "kerberos.client.Reply.bob", bytesMessageForBob);
+
+                    ConnectedChats.Add(To, SessionKey);
+
+                }
+                if(routingKey==ChatRoutingKey)
+                {
+                    Console.WriteLine();
+                    
+                    ChatMessage message = new ChatMessage(Recievedmessage);
+                    ChatMessage.PrintMessage(Recievedmessage, ConnectedChats);
+
+                    string NewMessage = ChatMessage.ChatMessageString(KerberosCrypto.Encrypt("I see you", ConnectedChats[message.from]), "alice");
+                    Publish(channel, message.from,"alice", NewMessage);
+                }
+
+                    return Task.CompletedTask;
             };
 
             await channel.BasicConsumeAsync(queueName, autoAck: true, consumer: consumer);
             Console.ReadLine();
         }
-
-    }
-
-    class MessageBody
-    {
-        internal DateTime Date;
-        internal string From;
-        internal string Body;
-
-        public MessageBody(string message)
+        public static void Publish(IChannel channel, string to, string from, string message)
         {
-            string[] strings = message.Split('|');
-            this.Date = DateTime.Parse(strings[0]);
-            this.Body = strings[1];
+            string RoutingChatKey = "kerberos.chat." + to;
+            byte[] messageToSend = Encoding.UTF8.GetBytes(ChatMessage.ChatMessageString(message, from));
+            channel.BasicPublishAsync("kerberos.exchange", RoutingChatKey, messageToSend);
+        }
+        public static byte[] ParseHexStringWith0x(string input)
+        {
+            var cleaned = input
+                .Replace("0x", "")
+                .Replace(" ", "")
+                .Replace(",", "");
+
+            return Convert.FromHexString(cleaned);
         }
     }
 
-    public static class KerberosCrypto
+
+    public class ChatMessage
+    {
+        public string from;
+        public DateTime time;
+        string encryptedMessage;
+        public ChatMessage(string message)
+        {
+            string[] Temp = message.Split('|');
+            from = Temp[0];
+            time = DateTime.Parse(Temp[1]);
+            encryptedMessage = Temp[2];
+        }
+        public static string ChatMessageString(string message, string to)
+        {
+            DateTime time = DateTime.UtcNow;
+            string To = to;
+            return $"{To}|{time}|{message}";
+        }
+        public static string ChatMessageSendString(string message, string to)
+        {
+            DateTime time = DateTime.UtcNow;
+            string To = to;
+            return $"{To}|{time}|{message}";
+        }
+        public static void PrintMessage(string message, Dictionary<string, byte[]> Keys)
+        {
+            ChatMessage chatMessage = new ChatMessage(message);
+            string decryptedMessage = KerberosCrypto.Decrypt(chatMessage.encryptedMessage, Keys[chatMessage.from]);
+            Console.WriteLine($"{chatMessage.time.ToString()} {chatMessage.from}: {decryptedMessage}");
+        }
+
+    }
+        public static class KerberosCrypto
     {
         public static string Encrypt(string plainText, byte[] key)
         {
@@ -173,48 +232,6 @@ namespace Client
             return key;
         }
 
-        // ====================== ТИКЕТЫ ======================
-        public static string EncryptTicket(double ts, int lifetime, byte[] sessionKey, string target, byte[] longTermKey)
-        {
-            var ticket = new
-            {
-                ts = ts,
-                lt = lifetime,
-                sk = Convert.ToBase64String(sessionKey),
-                tgt = target
-            };
-            string json = JsonSerializer.Serialize(ticket);
-            return Encrypt(json, longTermKey);
-        }
-
-        public static (double Ts, int Lt, byte[] SessionKey, string Target) DecryptTicket(string encTicket, byte[] longTermKey)
-        {
-            string json = Decrypt(encTicket, longTermKey);
-            var t = JsonSerializer.Deserialize<JsonElement>(json);
-            return (
-                t.GetProperty("ts").GetDouble(),
-                t.GetProperty("lt").GetInt32(),
-                Convert.FromBase64String(t.GetProperty("sk").GetString()!),
-                t.GetProperty("tgt").GetString()!
-            );
-        }
-
-        // ====================== АУТЕНТИФИКАТОР ======================
-        public static string EncryptAuthenticator(string clientName, double ts, byte[] sessionKey)
-        {
-            var auth = new { client = clientName, ts = ts };
-            return Encrypt(JsonSerializer.Serialize(auth), sessionKey);
-        }
-
-        public static (string ClientName, double Ts) DecryptAuthenticator(string encAuth, byte[] sessionKey)
-        {
-            string json = Decrypt(encAuth, sessionKey);
-            var a = JsonSerializer.Deserialize<JsonElement>(json);
-            return (a.GetProperty("client").GetString()!, a.GetProperty("ts").GetDouble());
-        }
-
-        // ====================== ЧАТ ======================
-        public static string EncryptChat(string message, byte[] sessionKey) => Encrypt(message, sessionKey);
-        public static string DecryptChat(string encMessage, byte[] sessionKey) => Decrypt(encMessage, sessionKey);
+        
     }
 }
