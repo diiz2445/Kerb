@@ -8,7 +8,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 
-namespace Client
+namespace ClientEve
 {
     public class Program
     {
@@ -18,7 +18,7 @@ namespace Client
             Console.WriteLine("Клиент для Kerberso");
             Console.WriteLine("Запуск... Ctrl+C для выхода\n");
 
-            Dictionary<string, byte[]> ConnectedChats= new Dictionary<string, byte[]>();
+            Dictionary<string, byte[]> ConnectedChats = new Dictionary<string, byte[]>();
 
             string envPath = Path.Combine(Directory.GetCurrentDirectory(), "RabbitClient.env");
             // 1. Загружаем .env + переменные окружения
@@ -38,8 +38,8 @@ namespace Client
             string topicPattern = config["KERBEROS_TOPIC_PATTERN"] ?? "kerberos.client.Forward.";
             string ttl = config["MESSAGE_TTL"] ?? "5";
             string replyTopicPattern = config["REPLY_TOPIC_PATTERN"] ?? "kerberos.client.#.reply";
-            string ReplyroutingKey = $"kerberos.client.Reply.alice";
-            string ChatRoutingKey = "kerberos.chat.alice";
+            string ReplyroutingKey = $"kerberos.client.Reply.eve";
+            string ChatRoutingKey = "kerberos.chat.eve";
             byte[] parsedKey = ParseHexStringWith0x(config["CRYPT_KEY"]);
             //string queueName = config["KERBEROS_QUEUE_NAME"] ?? "kdc.requests";
             // ───────────────────────────────────────────────
@@ -67,21 +67,21 @@ namespace Client
             QueueDeclareOk queueDeclareResult = await channel.QueueDeclareAsync();
             string queueName = queueDeclareResult.QueueName;
 
-            await channel.QueueBindAsync(queue: queueName, exchange: exchangeName, routingKey:ReplyroutingKey );
+            await channel.QueueBindAsync(queue: queueName, exchange: exchangeName, routingKey: ReplyroutingKey);
             await channel.QueueBindAsync(
                                         queue: queueName,
                                         exchange: exchangeName,
-                                        routingKey: ChatRoutingKey                // kerberos.chat.alice
+                                        routingKey: ChatRoutingKey                // kerberos.chat.eve
             );
 
             Console.WriteLine(DateTime.UtcNow);
 
-            string body = $"23.02.2026 18:22:12|alice,bob";//Сообщение для KDC о желании поговорить с Бобиком
+            string body = $"23.02.2026 18:22:12|eve,bob";//Сообщение для KDC о желании поговорить с Бобиком
             string To = "bob";
-            byte[] bytes = Encoding.UTF8.GetBytes( body );
-            string TopicName = topicPattern + "alice";
+            byte[] bytes = Encoding.UTF8.GetBytes(body);
+            string TopicName = topicPattern + "eve";
             Thread.Sleep(2000);
-            channel.BasicPublishAsync(exchangeName, routingKey: TopicName,body:bytes);
+            channel.BasicPublishAsync(exchangeName, routingKey: TopicName, body: bytes);
             Console.WriteLine($"Message Published at {ReplyroutingKey}");
 
 
@@ -108,29 +108,28 @@ namespace Client
 
 
                     //Готовим сообщение для Боба
-                    string SessionPart = KerberosCrypto.Encrypt(MyData[0] + ",Alice", SessionKey);
+                    string SessionPart = KerberosCrypto.Encrypt(MyData[0] + ",eve", SessionKey);
                     string MessageForBob = SessionPart + "," + ParsedMessage[1];
                     byte[] bytesMessageForBob = Encoding.UTF8.GetBytes(MessageForBob);
 
                     //Публикуем Бобу сообщение
                     channel.BasicPublishAsync(exchangeName, "kerberos.client.Reply.bob", bytesMessageForBob);
 
-                    try { ConnectedChats.Add(To, SessionKey); }
-                    catch { }
+                    ConnectedChats.Add(To, SessionKey);
 
                 }
-                if(routingKey==ChatRoutingKey)
+                if (routingKey == ChatRoutingKey)
                 {
                     Console.WriteLine();
-                    
+
                     ChatMessage message = new ChatMessage(Recievedmessage);
                     ChatMessage.PrintMessage(Recievedmessage, ConnectedChats);
 
-                    string NewMessage = ChatMessage.ChatMessageString(KerberosCrypto.Encrypt("I see you", ConnectedChats[message.from]), "alice");
-                    Publish(channel, message.from,"alice", NewMessage);
+                    string NewMessage = ChatMessage.ChatMessageString(KerberosCrypto.Encrypt("I see you", ConnectedChats[message.from]), "eve");
+                    Publish(channel, message.from, "eve", NewMessage);
                 }
 
-                    return Task.CompletedTask;
+                return Task.CompletedTask;
             };
 
             await channel.BasicConsumeAsync(queueName, autoAck: true, consumer: consumer);
@@ -186,7 +185,7 @@ namespace Client
         }
 
     }
-        public static class KerberosCrypto
+    public static class KerberosCrypto
     {
         public static string Encrypt(string plainText, byte[] key)
         {
@@ -233,6 +232,6 @@ namespace Client
             return key;
         }
 
-        
+
     }
 }

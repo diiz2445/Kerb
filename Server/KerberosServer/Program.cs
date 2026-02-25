@@ -14,11 +14,15 @@ namespace KerberosKdcSimple
     {
         private static readonly byte[] KeyAlice = { 0x06, 0xbd, 0xf0, 0xf9, 0xb7, 0x32, 0x97, 0x6f, 0xd8, 0x25, 0x23, 0xb1, 0xf0, 0xee, 0x19, 0x30 };
         private static readonly byte[] KeyBob = { 0xf8, 0x0b, 0x68, 0x2d, 0xdb, 0x63, 0xfc, 0x6f, 0xcb, 0x94, 0x05, 0xc0, 0x70, 0x7c, 0x86, 0x96 };
-        
-
+        private static readonly byte[] KeyEve = { 0x1b, 0xed, 0xd6, 0x2e, 0x00, 0x6b, 0x1f, 0x7a, 0xdc, 0x20, 0x72, 0xb9, 0x0f, 0x6a, 0xb2, 0x0f };
+        public static Dictionary<string, byte[]> Keys = new Dictionary<string, byte[]>();
         static async Task Main(string[] args)
         {
-            
+            Keys.Add("alice", KeyAlice);
+            Keys.Add("bob", KeyBob);
+            Keys.Add("eve", KeyEve);
+
+
             Console.WriteLine("Kerberos KDC - простой сервер RabbitMQ (один файл)");
             Console.WriteLine("Запуск... Ctrl+C для выхода\n");
 
@@ -109,14 +113,14 @@ namespace KerberosKdcSimple
                             string strSessionKey = Convert.ToBase64String(sessionKey);
                             string BackMessage = dateServ+","+messageTTL+","+strSessionKey;
 
-                            string EncryptedAlice = KerberosCrypto.Encrypt(BackMessage + "," + to,KeyAlice);
-                            string EncryptedBob = KerberosCrypto.Encrypt(BackMessage + "," + from, KeyBob);
+                            string EncryptedAlice = KerberosCrypto.Encrypt(BackMessage + "," + to, Keys[from]);
+                            string EncryptedBob = KerberosCrypto.Encrypt(BackMessage + "," + from, Keys[to]);
                             //Отправка сообщения назад
                             byte[] MessageToSend = Encoding.UTF8.GetBytes(EncryptedAlice+","+EncryptedBob);
                             byte[] bytesEA = Encoding.UTF8.GetBytes(EncryptedAlice);
                             byte[] bytesEB = Encoding.UTF8.GetBytes(EncryptedBob);
 
-                            string ReplyroutingKey = $"kerberos.client.Reply.{parts[0]}";
+                            string ReplyroutingKey = $"kerberos.client.Reply.{from}";
                             channel.BasicPublishAsync("kerberos.exchange", ReplyroutingKey, MessageToSend);
 
                             Console.WriteLine($"Message Published at {ReplyroutingKey}");
