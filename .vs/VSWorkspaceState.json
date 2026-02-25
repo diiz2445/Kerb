@@ -1,11 +1,6 @@
 {
   "ExpandedNodes": [
-    "",
-    "\\Server",
-    "\\Server\\KerberosServer",
-    "\\Server\\KerberosServer\\BasicRabbit",
-    "\\Server\\KerberosServer\\bin"
+    ""
   ],
-  "SelectedNode": "\\Server\\KerberosServer\\KerberosServer.csproj",
   "PreviewInSolutionExplorer": false
 }
